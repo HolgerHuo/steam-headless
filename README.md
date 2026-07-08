@@ -1,76 +1,58 @@
-# Headless Steam Service
+# Steam Headless
 
-![](./images/banner.jpg)
+Containerized gaming server with labwc desktop and Sunshine for streaming.
 
-Remote Game Streaming Server.
+## Features
 
-Play your games either in the browser with audio or via Steam Link or Moonlight. Play from another Steam Client with Steam Remote Play.
+- Sunshine server with Moonlight-compatible desktop streaming
+- Steam Client configured for Linux gaming and Proton
+- labwc Wayland desktop with Waybar, fuzzel launcher, PCManFM file manager, and foot terminal
+- PipeWire audio with Pulse compatibility
+- AMD and Intel GPU support
+- Controller support through Sunshine virtual input devices
+- Root access inside the container
+- Arch Linux base image
 
-Easily deploy a Steam Docker instance in seconds.
+## Notes
 
-## Features:
-- Steam Client configured for running on Linux with Proton
-- Moonlight compatible server for easy remote desktop streaming
-- Easy installation of EmeDeck, Heroic and Lutris via Flatpak
-- Full video/audio noVNC web access to a Xfce4 Desktop
-- NVIDIA, AMD and Intel GPU support
-- Full controller support
-- Support for Flatpak and Appimage installation
-- Root access
-- Based on Debian Trixie
+### Additional Software
 
----
-## Notes:
+Put startup scripts in `~/init.d` with a `.sh` suffix to run them when the container starts.
 
-### ADDITIONAL SOFTWARE:
-If you wish to install additional applications, you can generate a script inside the `~/init.d` directory ending with ".sh".
-This will be executed on the container startup.
+### Storage Paths
 
-Also, you can install applications using the WebUI under **Applications > System > Software**. There you can install other game launchers like Lutris, Heroic or EmuDeck.
+Persist anything important under the home directory or another bind mount. Files outside persistent mounts can be lost when the container is recreated or updated.
 
-### STORAGE PATHS:
-Everything that you wish to save in this container should be stored in the home directory or a docker container mount that you have specified. 
-All files that are store outside your home directory are not persistent and will be wiped if there is an update of the container or you change something in the template.
+### Games Library
 
-### GAMES LIBRARY:
-It is recommended that you mount your games library to `/mnt/games` and configure Steam to add that path.
+Mount your games library at `/mnt/games` and add that path in Steam.
 
-### AUTO START APPLICATIONS:
-In this container, Steam is configured to automatically start. If you wish to add additional services to automatically start, 
-add them under **Applications > Settings > Session and Startup** in the WebUI.
+### Network Mode
 
-### NETWORK MODE:
-If you want to use the container as a Steam Remote Play (previously "In Home Streaming") host device you should create a custom network and assign this container it's own IP, if you don't do this the traffic will be routed through the internet since Steam thinks you are on a different network.
+The example Compose file uses host networking. This avoids common discovery and port-forwarding issues with Sunshine and Steam Remote Play.
 
-### USING HOST X SERVER:
-If your host is already running X, you can just use that. To do this, be sure to configure:
-  - DISPLAY=:0    
-    **(Variable)** - *Configures the sceen to use the primary display. Set this to whatever your host is using*
-  - MODE=secondary    
-    **(Variable)** - *Configures the container to not start an X server of its own*
-  - HOST_DBUS=true    
-    **(Variable)** - *Optional - Configures the container to use the host dbus process*
-  - /run/dbus:/run/dbus:ro    
-    **(Mount)**  - *Optional - Configures the container to use the host dbus process*
+## Docker Compose
 
+These instructions assume Docker Compose is installed. Depending on your Docker installation, the command may be `docker compose` or `docker-compose`.
 
----
-## Installation:
-- [Docker Compose](./docs/docker-compose.md)
-- [Unraid](./docs/unraid.md)
-- [Ubuntu Server](./docs/ubuntu-server.md)
+Download [deploy/docker-compose.yml](./deploy/docker-compose.yml) and [deploy/.env.example](./deploy/.env.example), set `DRI_CARD_NUM` and `DRI_RENDERD_NUM` to the desired `/dev/dri/card*` and `/dev/dri/renderD*` devices.
 
+If you have multiple GPUs, map PCI devices to DRM nodes:
 
----
-## Running locally:
+```shell
+lspci | grep -E 'VGA|3D'
+ls -la /sys/class/drm/card*
+ls -l /sys/class/drm/renderD*
+```
 
-For a development environment, I have created a script in the devops directory.
+The default Wayland desktop uses `WLR_BACKENDS=drm,libinput`, `LIBSEAT_BACKEND=seatd`, and `SEATD_VTBOUND=0`. This uses the mapped DRM device for the wlroots output while allowing Sunshine virtual input devices to be read through libinput. Set `WLR_BACKENDS=headless,libinput` if you want a virtual wlroots output instead of a DRM/KMS session.
 
+When running multiple containers on the same host, set a unique `SUNSHINE_INPUT_SEAT` for each container, such as `steam-a` and `steam-b`. Sunshine uses this as its input seat marker, and the container only relays virtual input devices matching its own marker.
 
----
-## TODO:
-- Remove SSH
-- Require user to enter password for sudo
-- Document how to run this container:
-    - Other server OS
-    - TrueNAS Scale 
+Start the service:
+
+```shell
+sudo docker compose up -d
+```
+
+After the container starts, pair Moonlight with Sunshine and launch Desktop or Steam.

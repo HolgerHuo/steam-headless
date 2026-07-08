@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+source /usr/lib/steam-headless/common-functions.sh
+source /usr/lib/steam-headless/export-user-session-env.sh
+
+if [[ -n "${SUNSHINE_USER:-}" && -n "${SUNSHINE_PASS:-}" ]]; then
+    /usr/bin/sunshine /home/player/.config/sunshine/sunshine.conf --creds "${SUNSHINE_USER:?}" "${SUNSHINE_PASS:?}"
+fi
+
+wait_for_session_dbus
+wait_for_wayland
+
+export XDG_SEAT="${SUNSHINE_INPUT_SEAT:-seat0}"
+
+exec /usr/bin/sunshine /home/player/.config/sunshine/sunshine.conf

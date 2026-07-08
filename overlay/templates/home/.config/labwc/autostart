@@ -1,0 +1,2 @@
+mako >/dev/null 2>&1 &
+waybar --log-level off &

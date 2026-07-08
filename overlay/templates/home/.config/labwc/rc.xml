@@ -1,0 +1,16 @@
+<labwc_config>
+  <keyboard>
+    <keybind key="C-A-Space">
+      <action name="Execute" command="fuzzel"/>
+    </keybind>
+    <keybind key="C-A-e">
+      <action name="Execute" command="pcmanfm"/>
+    </keybind>
+    <keybind key="C-A-Return">
+      <action name="Execute" command="foot"/>
+    </keybind>
+    <keybind key="C-A-d">
+      <action name="ToggleShowDesktop"/>
+    </keybind>
+  </keyboard>
+</labwc_config>

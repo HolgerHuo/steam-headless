@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -e
+source /usr/lib/steam-headless/common-functions.sh
+source /usr/lib/steam-headless/export-user-session-env.sh
+
+wait_for_session_dbus
+wait_for_socket "${XDG_RUNTIME_DIR:?}/pipewire-0" "PipeWire server socket"
+
+if [ -n "${PIPEWIRE_RENICE:-}" ] && command -v renice >/dev/null 2>&1; then
+    renice -n "${PIPEWIRE_RENICE}" -p "$$" >/dev/null 2>&1 || \
+        echo "Unable to renice WirePlumber to ${PIPEWIRE_RENICE}"
+fi
+
+exec /usr/bin/wireplumber

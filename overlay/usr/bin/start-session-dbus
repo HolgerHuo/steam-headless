@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+source /usr/lib/steam-headless/export-user-session-env.sh
+
+exec dbus-daemon --session --nofork --nopidfile --address="unix:path=${XDG_RUNTIME_DIR:?}/bus"

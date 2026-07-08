@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+: "${PUID:?}"
+
+export HOME="/home/player"
+export USER="player"
+export LOGNAME="player"
+export XDG_CACHE_HOME="${HOME}/.cache"
+export XDG_CONFIG_HOME="${HOME}/.config"
+export XDG_DATA_HOME="${HOME}/.local/share"
+export XDG_DATA_DIRS="/usr/local/share/:/usr/share/"
+export XDG_RUNTIME_DIR="/run/user/${PUID}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+export XDG_SESSION_TYPE="wayland"
+export WAYLAND_DISPLAY="wayland-0"
+export DISPLAY=":0"
+export XDG_CURRENT_DESKTOP="labwc"
+export XDG_SESSION_DESKTOP="labwc"
+export PULSE_SERVER="unix:${XDG_RUNTIME_DIR}/pulse/native"
+export PATH="$HOME/.local/bin:$PATH"

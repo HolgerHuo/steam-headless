@@ -1,0 +1,16 @@
+<openbox_menu>
+  <menu id="root-menu">
+    <item label="Applications">
+      <action name="Execute" command="fuzzel"/>
+    </item>
+    <item label="File Manager">
+      <action name="Execute" command="pcmanfm"/>
+    </item>
+    <item label="Terminal">
+      <action name="Execute" command="foot"/>
+    </item>
+    <item label="Steam">
+      <action name="Execute" command="steam"/>
+    </item>
+  </menu>
+</openbox_menu>

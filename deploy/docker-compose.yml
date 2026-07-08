@@ -1,0 +1,53 @@
+services:
+  steam-headless:
+    image: ghcr.io/holgerhuo/steam-headless:latest
+    restart: unless-stopped
+    shm_size: "${SHM_SIZE}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 524288
+      rtprio: 99
+      memlock: -1
+      nice: -11
+    cap_add:
+      - MKNOD
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    network_mode: host
+    hostname: "${NAME}"
+    extra_hosts:
+      - "${NAME}:127.0.0.1"
+    tmpfs:
+      - /run
+      - /tmp
+    environment:
+      - TZ=${TZ}
+      - USER_LOCALES=${USER_LOCALES}
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - SUNSHINE_USER=${SUNSHINE_USER}
+      - SUNSHINE_PASS=${SUNSHINE_PASS}
+      - SUNSHINE_INPUT_SEAT=${SUNSHINE_INPUT_SEAT}
+      - WLR_BACKENDS=${WLR_BACKENDS}
+      - WINE_CPU_TOPOLOGY=${CPU_LIMIT}
+    devices:
+      - /dev/fuse
+      - /dev/uinput
+      - /dev/uhid
+      - /dev/dri/card${DRI_CARD_NUM}
+      - /dev/dri/renderD${DRI_RENDERD_NUM}
+    device_cgroup_rules:
+      - "c 13:* rmw"
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT}"
+          memory: "${MEMORY_LIMIT}"
+    volumes:
+      - ${HOME_DIR}/:/home/player/:rw
+      - ${GAMES_DIR}/:/mnt/games/:rw

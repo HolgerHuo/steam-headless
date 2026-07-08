@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -e
+source /usr/lib/steam-headless/common-functions.sh
+
+wait_for_socket "/run/dbus/system_bus_socket" "System dbus socket"
+
+exec /usr/lib/polkit-1/polkitd --no-debug

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -e
+
+if [[ -z "${SUNSHINE_CLIENT_WIDTH:-}" || -z "${SUNSHINE_CLIENT_HEIGHT:-}" || -z "${SUNSHINE_CLIENT_FPS:-}" ]]; then
+    exit 0
+fi
+
+if ! command -v wlr-randr >/dev/null 2>&1; then
+    exit 0
+fi
+
+wlroots_output="$(wlr-randr 2>/dev/null | awk '/^[^[:space:]]/ { print $1; exit }')"
+if [[ -z "${wlroots_output:-}" ]]; then
+    exit 0
+fi
+
+client_mode="${SUNSHINE_CLIENT_WIDTH:?}x${SUNSHINE_CLIENT_HEIGHT:?}@${SUNSHINE_CLIENT_FPS:?}Hz"
+
+wlr-randr --output "${wlroots_output:?}" --mode "${client_mode:?}" || \
+wlr-randr --output "${wlroots_output:?}" --custom-mode "${client_mode:?}" || \
+exit 0

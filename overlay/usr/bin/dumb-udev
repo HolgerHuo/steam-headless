@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+
+# Copyright (C) Josh Sunnex - All Rights Reserved
+# SPDX-License-Identifier: MIT
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import grp
+import logging
+import os
+import signal
+import socket
+import stat
+import struct
+import time
+
+import pyudev
+
+NETLINK_KOBJECT_UEVENT = 15
+UDEV_MONITOR_UDEV = 2
+UDEV_MONITOR_MAGIC = 0xFEEDCAFE
+
+SYSFS_VIRTUAL_INPUT_PREFIX = "/sys/devices/virtual/input"
+
+EV_KEY = 0x01
+EV_REL = 0x02
+EV_ABS = 0x03
+
+REL_X = 0x00
+REL_Y = 0x01
+
+ABS_X = 0x00
+ABS_Y = 0x01
+ABS_RX = 0x03
+ABS_RY = 0x04
+ABS_RZ = 0x05
+ABS_HAT0X = 0x10
+ABS_HAT0Y = 0x11
+
+KEY_RESERVED = 0x00
+BTN_MISC = 0x100
+BTN_MOUSE = 0x110
+BTN_LEFT = 0x110
+BTN_RIGHT = 0x111
+BTN_JOYSTICK = 0x120
+BTN_GAMEPAD = 0x130
+BTN_DIGI = 0x140
+BTN_TOOL_PEN = 0x140
+BTN_TOOL_FINGER = 0x145
+BTN_TOUCH = 0x14A
+BTN_STYLUS = 0x14B
+
+INPUT_PROP_POINTER = 0x00
+INPUT_PROP_DIRECT = 0x01
+INPUT_PROP_BUTTONPAD = 0x02
+INPUT_PROP_ACCELEROMETER = 0x06
+
+
+def murmurhash2(data: bytes, seed: int = 0) -> int:
+    m = 0x5BD1E995
+    r = 24
+    length = len(data)
+    h = (seed ^ length) & 0xFFFFFFFF
+
+    length4 = length // 4
+    for index in range(length4):
+        offset = index * 4
+        k = int.from_bytes(data[offset : offset + 4], "little")
+        k = (k * m) & 0xFFFFFFFF
+        k ^= k >> r
+        k = (k * m) & 0xFFFFFFFF
+        h = (h * m) & 0xFFFFFFFF
+        h ^= k
+
+    tail = data[length4 * 4 :]
+    if len(tail) == 3:
+        h ^= tail[2] << 16
+    if len(tail) >= 2:
+        h ^= tail[1] << 8
+    if len(tail) >= 1:
+        h ^= tail[0]
+        h = (h * m) & 0xFFFFFFFF
+
+    h ^= h >> 13
+    h = (h * m) & 0xFFFFFFFF
+    h ^= h >> 15
+    return h & 0xFFFFFFFF
+
+
+def read_sysfs_bitmap(path: str) -> set[int]:
+    try:
+        content = open(path, encoding="utf-8").read().strip()
+    except FileNotFoundError:
+        return set()
+
+    bits: set[int] = set()
+    words = content.split()
+    for word_index, word in enumerate(reversed(words)):
+        try:
+            value = int(word, 16)
+        except ValueError:
+            continue
+        bit = 0
+        while value:
+            if value & 1:
+                bits.add(word_index * 64 + bit)
+            value >>= 1
+            bit += 1
+    return bits
+
+
+def device_capability_dir(device: pyudev.Device) -> str:
+    if os.path.basename(device.sys_path).startswith(("event", "js", "mouse")):
+        return os.path.join(os.path.dirname(device.sys_path), "capabilities")
+    return os.path.join(device.sys_path, "capabilities")
+
+
+def input_device_name(device: pyudev.Device) -> str | None:
+    name_dir = device.sys_path
+    if os.path.basename(device.sys_path).startswith(("event", "js", "mouse")):
+        name_dir = os.path.dirname(device.sys_path)
+
+    try:
+        return open(os.path.join(name_dir, "name"), encoding="utf-8").read().strip()
+    except FileNotFoundError:
+        return None
+
+
+def classify_input_device(device: pyudev.Device) -> list[str]:
+    cap_dir = device_capability_dir(device)
+    ev_bits = read_sysfs_bitmap(os.path.join(cap_dir, "ev"))
+    key_bits = read_sysfs_bitmap(os.path.join(cap_dir, "key"))
+    rel_bits = read_sysfs_bitmap(os.path.join(cap_dir, "rel"))
+    abs_bits = read_sysfs_bitmap(os.path.join(cap_dir, "abs"))
+    prop_bits = read_sysfs_bitmap(os.path.join(cap_dir, "prop"))
+
+    tags = ["ID_INPUT=1"]
+
+    has_keys = EV_KEY in ev_bits
+    has_rel_xy = EV_REL in ev_bits and {REL_X, REL_Y}.issubset(rel_bits)
+    has_abs_xy = EV_ABS in ev_bits and {ABS_X, ABS_Y}.issubset(abs_bits)
+    has_touch = BTN_TOUCH in key_bits
+
+    if has_keys and any(KEY_RESERVED < bit < BTN_MISC for bit in key_bits):
+        tags.extend(["ID_INPUT_KEY=1", "ID_INPUT_KEYBOARD=1"])
+
+    if has_rel_xy and key_bits.intersection({BTN_LEFT, BTN_RIGHT, BTN_MOUSE}):
+        tags.append("ID_INPUT_MOUSE=1")
+
+    if BTN_TOOL_PEN in key_bits or BTN_STYLUS in key_bits:
+        tags.append("ID_INPUT_TABLET=1")
+    elif has_abs_xy and has_touch and INPUT_PROP_DIRECT in prop_bits:
+        tags.append("ID_INPUT_TOUCHSCREEN=1")
+    elif has_abs_xy and (
+        INPUT_PROP_BUTTONPAD in prop_bits
+        or INPUT_PROP_POINTER in prop_bits
+        or BTN_TOOL_FINGER in key_bits
+    ):
+        tags.append("ID_INPUT_TOUCHPAD=1")
+
+    joystick_buttons = any(BTN_JOYSTICK <= bit < BTN_DIGI for bit in key_bits)
+    joystick_axes = {ABS_X, ABS_Y}.issubset(abs_bits) and bool(
+        abs_bits.intersection({ABS_RX, ABS_RY, ABS_RZ, ABS_HAT0X, ABS_HAT0Y})
+    )
+    if joystick_buttons or joystick_axes:
+        tags.append("ID_INPUT_JOYSTICK=1")
+
+    if INPUT_PROP_ACCELEROMETER in prop_bits:
+        tags.append("ID_INPUT_ACCELEROMETER=1")
+
+    return tags
+
+
+class DumbUdevRelay:
+    def __init__(self, loop: asyncio.AbstractEventLoop, config: argparse.Namespace):
+        self.loop = loop
+        self.config = config
+        self.context: pyudev.Context | None = None
+        self.kmonitor: pyudev.Monitor | None = None
+        self.managed_sys_paths: set[str] = set()
+        self.log = logging.getLogger(__class__.__name__)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.stop()
+
+    def start(self):
+        self.log.info("Starting input monitor...")
+        self.ensure_udev_paths()
+        self.context = pyudev.Context()
+        self.kmonitor = pyudev.Monitor.from_netlink(self.context, "kernel")
+        self.kmonitor.filter_by("input")
+        self.kmonitor.start()
+        self.loop.add_reader(self.kmonitor.fileno(), self.handle_kernel_event, self.kmonitor)
+        self.log.info("Input monitor running.")
+
+    def stop(self):
+        self.log.info("Stopping input monitor...")
+        self.kmonitor = None
+        self.context = None
+        self.log.info("Input monitor stopped.")
+
+    def ensure_udev_paths(self):
+        if self.config.relay_only:
+            return
+
+        for path in ("/dev/input", "/run/udev", "/run/udev/data"):
+            os.makedirs(path, mode=0o755, exist_ok=True)
+            os.chmod(path, 0o755)
+
+        if not os.path.exists("/run/udev/control"):
+            open("/run/udev/control", "w", encoding="utf-8").close()
+        os.chmod("/run/udev/control", 0o644)
+
+    def handle_kernel_event(self, monitor: pyudev.Monitor):
+        device = monitor.poll(0)
+        if device is None:
+            return
+
+        if not device.sys_path.startswith(SYSFS_VIRTUAL_INPUT_PREFIX):
+            self.log.debug("Ignoring non-virtual input event: %s", device.sys_path)
+            return
+
+        if not self.should_handle_device(device):
+            return
+
+        self.log.info("Received virtual input event: %s action=%s", device.sys_path, device.action)
+        if device.action == "add":
+            asyncio.ensure_future(self.add_device(device))
+        elif device.action == "remove":
+            asyncio.ensure_future(self.remove_device(device))
+
+    def should_handle_device(self, device: pyudev.Device) -> bool:
+        if not self.config.input_seat:
+            return True
+
+        if device.action == "remove":
+            return device.sys_path in self.managed_sys_paths
+
+        name = input_device_name(device)
+        if name is None:
+            self.log.debug("Ignoring unnamed virtual input device: %s", device.sys_path)
+            return False
+
+        marker = f"({self.config.input_seat})"
+        if marker in name:
+            self.managed_sys_paths.add(device.sys_path)
+            return True
+
+        self.log.debug("Ignoring virtual input device outside marker %s: %s", marker, name)
+        return False
+
+    def manage_device_node(self, action: str, device: pyudev.Device):
+        if self.config.relay_only or device.device_node is None:
+            return
+
+        if action == "add":
+            try:
+                st = os.stat(device.device_node)
+                if st.st_rdev != device.device_number:
+                    os.remove(device.device_node)
+                else:
+                    self.set_device_node_permissions(device.device_node)
+                    return
+            except FileNotFoundError:
+                pass
+
+            self.log.info("Creating device node %s.", device.device_node)
+            os.mknod(device.device_node, stat.S_IFCHR | 0o660, device.device_number)
+            self.set_device_node_permissions(device.device_node)
+        elif action == "remove" and os.path.exists(device.device_node):
+            os.remove(device.device_node)
+
+    def set_device_node_permissions(self, device_node: str):
+        os.chmod(device_node, 0o660)
+        try:
+            input_gid = grp.getgrnam("input").gr_gid
+        except KeyError:
+            return
+        os.chown(device_node, -1, input_gid)
+
+    def manage_udev_data(self, action: str, device: pyudev.Device):
+        if self.config.relay_only:
+            return
+
+        data_path = self.get_udev_data_path(device)
+        if action == "add":
+            self.write_udev_data(data_path, device)
+            self.log.info("Added udev data %s.", data_path)
+        elif action == "remove" and os.path.exists(data_path):
+            os.remove(data_path)
+            self.log.info("Removed udev data %s.", data_path)
+
+    def get_udev_data_path(self, device: pyudev.Device) -> str:
+        if device.device_node is None:
+            return os.path.join("/run/udev/data", f"+input:{device.sys_name}")
+
+        major = os.major(device.device_number)
+        minor = os.minor(device.device_number)
+        return os.path.join("/run/udev/data", f"c{major}:{minor}")
+
+    def write_udev_data(self, data_path: str, device: pyudev.Device):
+        init_usec = device.properties.get("USEC_INITIALIZED")
+        if init_usec is None:
+            init_usec = str(int(time.time() * 1_000_000))
+
+        lines = [f"I:{init_usec}\n"]
+        for tag in classify_input_device(device):
+            lines.append(f"E:{tag}\n")
+
+        serial = device.properties.get("ID_SERIAL") or device.properties.get("PRODUCT") or "noserial"
+        lines.append(f"E:ID_SERIAL={serial}\n")
+
+        name = device.properties.get("NAME")
+        if name:
+            lines.append(f"E:NAME={name}\n")
+
+        lines.extend(["G:seat\n", "G:uaccess\n", "Q:seat\n", "Q:uaccess\n", "V:1\n"])
+
+        with open(data_path, "w", encoding="utf-8") as data_file:
+            data_file.writelines(lines)
+        os.chmod(data_path, 0o644)
+
+    def send_custom_udev_event(self, action: str, device: pyudev.Device):
+        def build_header(prop_len: int, subsys: str, dev_type: str, tag_bloom: int):
+            header_fmt = "8s8I"
+            header_size = struct.calcsize(header_fmt)
+            subsys_hash = socket.htonl(murmurhash2(subsys.encode(), 0)) if subsys else 0
+            dev_type_hash = socket.htonl(murmurhash2(dev_type.encode(), 0)) if dev_type else 0
+            tag_high = socket.htonl(tag_bloom >> 32)
+            tag_low = socket.htonl(tag_bloom & 0xFFFFFFFF)
+            return struct.pack(
+                header_fmt,
+                b"libudev",
+                socket.htonl(UDEV_MONITOR_MAGIC),
+                header_size,
+                header_size,
+                prop_len,
+                subsys_hash,
+                dev_type_hash,
+                tag_high,
+                tag_low,
+            )
+
+        def bloom_hash(tag: str):
+            tag_hash = murmurhash2(tag.encode(), 0)
+            bits = 1 << (tag_hash & 63)
+            bits |= 1 << ((tag_hash >> 6) & 63)
+            bits |= 1 << ((tag_hash >> 12) & 63)
+            bits |= 1 << ((tag_hash >> 18) & 63)
+            return bits
+
+        props = bytearray()
+        event_device = device
+        props += f"ACTION={action}".encode() + b"\0"
+        if device.properties.get("SEQNUM"):
+            props += f"SEQNUM={device.properties['SEQNUM']}".encode() + b"\0"
+        if action == "add":
+            if self.context is not None:
+                event_device = pyudev.Devices.from_sys_path(self.context, device.sys_path)
+
+        for key, value in event_device.properties.items():
+            props += f"{key}={value}".encode() + b"\0"
+
+        tag_hash = 0
+        for tag in event_device.tags:
+            tag_hash |= bloom_hash(tag)
+
+        header = build_header(
+            len(props),
+            event_device.subsystem or "",
+            event_device.device_type or "",
+            tag_hash,
+        )
+
+        sendfd = socket.socket(
+            socket.AF_NETLINK,
+            socket.SOCK_RAW | socket.SOCK_NONBLOCK,
+            NETLINK_KOBJECT_UEVENT,
+        )
+        try:
+            sendfd.sendto(header + props, (0, UDEV_MONITOR_UDEV))
+        except ConnectionRefusedError:
+            pass
+        finally:
+            sendfd.close()
+
+        self.log.info("Sent synthetic udev event for %s.", device.sys_path)
+
+    async def add_device(self, device: pyudev.Device):
+        self.manage_device_node("add", device)
+        self.manage_udev_data("add", device)
+        self.send_custom_udev_event("add", device)
+
+    async def remove_device(self, device: pyudev.Device):
+        self.manage_device_node("remove", device)
+        self.manage_udev_data("remove", device)
+        self.send_custom_udev_event("remove", device)
+        self.managed_sys_paths.discard(device.sys_path)
+
+
+async def shutdown(signal_name: str, relay: DumbUdevRelay, loop: asyncio.AbstractEventLoop):
+    logging.info("Received exit signal %s.", signal_name)
+    relay.stop()
+    loop.stop()
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    log = logging.getLogger("Service")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--relay-only", dest="relay_only", action="store_true")
+    parser.add_argument(
+        "--input-seat",
+        default=os.environ.get("SUNSHINE_INPUT_SEAT", ""),
+        help="Only relay Sunshine virtual input devices whose name contains this marker in parentheses.",
+    )
+    config = parser.parse_args()
+
+    if config.input_seat == "seat0":
+        config.input_seat = None
+
+    if config.relay_only:
+        log.info("Running in message relay only mode.")
+    if config.input_seat:
+        log.info("Only relaying virtual input devices marked with (%s).", config.input_seat)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    with DumbUdevRelay(loop, config) as relay:
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda sig=sig: asyncio.create_task(shutdown(sig, relay, loop)))
+        try:
+            relay.start()
+            loop.run_forever()
+        finally:
+            loop.stop()
+
+
+if __name__ == "__main__":
+    main()

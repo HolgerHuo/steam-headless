@@ -1,0 +1,30 @@
+{
+  "layer": "top",
+  "position": "top",
+  "height": 34,
+  "spacing": 6,
+  "modules-left": ["custom/launcher", "wlr/taskbar"],
+  "modules-right": ["tray", "pulseaudio", "clock"],
+  "custom/launcher": {
+    "format": "Apps",
+    "tooltip": false,
+    "on-click": "fuzzel"
+  },
+  "wlr/taskbar": {
+    "format": "{icon}",
+    "tooltip-format": "{title}",
+    "on-click": "activate"
+  },
+  "tray": {
+    "icon-size": 18,
+    "spacing": 6
+  },
+  "pulseaudio": {
+    "format": "Vol {volume}%",
+    "format-muted": "Muted",
+    "on-click": "pavucontrol"
+  },
+  "clock": {
+    "format": "{:%Y-%m-%d %H:%M}"
+  }
+}
